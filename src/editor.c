@@ -4953,7 +4953,7 @@ static ScintillaObject *create_new_sci(GeanyEditor *editor)
 	/* Y policy is set in editor_apply_update_prefs() */
 	SSM(sci, SCI_AUTOCSETSEPARATOR, '\n', 0);
 	SSM(sci, SCI_SETSCROLLWIDTHTRACKING, 1, 0);
-
+	SSM(sci, SCI_SETLAYOUTTHREADS, g_get_num_processors(), 0);
 	/* tag autocompletion images */
 	for (i = 0; i < TM_N_ICONS; i++)
 	{
