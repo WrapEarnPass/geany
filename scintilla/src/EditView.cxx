@@ -529,38 +529,42 @@ void EditView::LayoutLine(const EditModel &model, Surface *surface, const ViewSt
 			const bool multiThreadedContext = multiThreaded || callerMultiThreaded;
 			IPositionCache *pCache = posCache.get();
 
+			if(threads<2){
+				LayoutSegments(pCache, surface, vstyle, ll, segments, nextIndex, textUnicode, multiThreadedContext);
+			} else { //begin threads
 #if GTK
-			GThreadPool* threadpool = g_thread_pool_new (   baked_cb,   NULL,  threads,   TRUE,   NULL );
-			for (size_t th = 0; th < threads; th++) {
-				DecorationData	*decoration = g_slice_new (DecorationData);
-				decoration->pCache=pCache;
-				decoration->surface=surface;
-				decoration->vstyle=&vstyle;
-				decoration->ll=&ll;
-				decoration->segments=&segments;
-				decoration->nextIndex=&nextIndex;
-				decoration->textUnicode=textUnicode;
-				decoration->multiThreaded=multiThreadedContext;
-				g_thread_pool_push(threadpool,decoration,NULL);
-			}
-			g_thread_pool_free(threadpool, FALSE, TRUE);
+				GThreadPool* threadpool = g_thread_pool_new (   baked_cb,   NULL,  threads,   TRUE,   NULL );
+				for (size_t th = 0; th < threads; th++) {
+					DecorationData	*decoration = g_slice_new (DecorationData);
+					decoration->pCache=pCache;
+					decoration->surface=surface;
+					decoration->vstyle=&vstyle;
+					decoration->ll=&ll;
+					decoration->segments=&segments;
+					decoration->nextIndex=&nextIndex;
+					decoration->textUnicode=textUnicode;
+					decoration->multiThreaded=multiThreadedContext;
+					g_thread_pool_push(threadpool,decoration,NULL);
+				}
+				g_thread_pool_free(threadpool, FALSE, TRUE);
 #else
-			// If only 1 thread needed then use the main thread, else spin up multiple
-			const std::launch policy = (multiThreaded) ? std::launch::async : std::launch::deferred;
+				// If only 1 thread needed then use the main thread, else spin up multiple
+				const std::launch policy =std::launch::async;
 
-			std::vector<std::future<void>> futures;
-			for (size_t th = 0; th < threads; th++) {
-				// Find relative positions of everything except for tabs
-				std::future<void> fut = std::async(policy,
-					[pCache, surface, &vstyle, &ll, &segments, &nextIndex, textUnicode, multiThreadedContext]() {
-					LayoutSegments(pCache, surface, vstyle, ll, segments, nextIndex, textUnicode, multiThreadedContext);
-				});
-				futures.push_back(std::move(fut));
-			}
-			for (const std::future<void> &f : futures) {
-				f.wait();
-			}
+				std::vector<std::future<void>> futures;
+				for (size_t th = 0; th < threads; th++) {
+					// Find relative positions of everything except for tabs
+					std::future<void> fut = std::async(policy,
+						[pCache, surface, &vstyle, &ll, &segments, &nextIndex, textUnicode, multiThreadedContext]() {
+						LayoutSegments(pCache, surface, vstyle, ll, segments, nextIndex, textUnicode, multiThreadedContext);
+					});
+					futures.push_back(std::move(fut));
+				}
+				for (const std::future<void> &f : futures) {
+					f.wait();
+				}
 #endif
+			}//end threads
 		}
 
 		// Accumulate absolute positions from relative positions within segments and expand tabs
