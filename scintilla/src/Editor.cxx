@@ -30,6 +30,10 @@
 #include <thread>
 #include <future>
 
+#ifdef GTK
+#include <glib.h>
+#endif
+
 #include "ScintillaTypes.h"
 #include "ScintillaMessages.h"
 #include "ScintillaStructures.h"
@@ -1535,6 +1539,69 @@ constexpr Sci::Position lengthToMultiThread = 4000;
 
 }
 
+#ifdef GTK
+namespace {
+typedef struct {
+const SignificantLines *significantLines;
+Surface *surface; 
+std::atomic<size_t> *nextIndex;
+std::vector<int> *linesAfterWrap;
+std::mutex *mutexRetrieve;
+EditView *view;
+size_t linesBeingWrapped;
+Sci::Line *lineToWrap;
+Document *pdoc;
+EditModel *editModel;
+ViewStyle *vs;
+int wrapWidth;
+bool multiThreaded;
+} DecorationData;
+  
+void baked_cb(void *data, void *user_data)
+{
+  DecorationData *decoration = (DecorationData*)data;
+  Surface *surface =decoration->surface;
+  std::atomic<size_t> &nextIndex = *decoration->nextIndex;
+  std::vector<int> &linesAfterWrap = *decoration->linesAfterWrap;
+  std::mutex &mutexRetrieve =*decoration->mutexRetrieve;
+  EditModel *editModel =decoration->editModel;
+  EditView &view = *decoration->view;
+  Sci::Line &lineToWrap = *decoration->lineToWrap;
+  const SignificantLines significantLines =*decoration->significantLines;
+  const size_t linesBeingWrapped = decoration->linesBeingWrapped;
+  Document *pdoc = decoration->pdoc;
+  ViewStyle &vs = *decoration->vs;
+  int wrapWidth = decoration->wrapWidth;
+  const bool multiThreaded=decoration->multiThreaded;
+  
+	// llTemporary is reused for non-significant lines, avoiding allocation costs.
+	std::shared_ptr<LineLayout> llTemporary = std::make_shared<LineLayout>(-1, 200);
+	while (true) {
+		const size_t i = nextIndex.fetch_add(1, std::memory_order_acq_rel);
+		if (i >= linesBeingWrapped) {
+			break;
+		}
+		const Sci::Line lineNumber = lineToWrap + i;
+		const Range rangeLine = pdoc->LineRange(lineNumber);
+		const Sci::Position lengthLine = rangeLine.Length();
+		if (lengthLine < lengthToMultiThread) {
+			std::shared_ptr<LineLayout> ll;
+			if (significantLines.LineMayCache(lineNumber)) {
+				std::lock_guard<std::mutex> guard(mutexRetrieve);
+				ll = view.RetrieveLineLayout(lineNumber, *editModel);
+			} else {
+				ll = llTemporary;
+				ll->ReSet(lineNumber, lengthLine);
+			}
+			view.LayoutLine(*editModel, surface, vs, ll.get(), wrapWidth, multiThreaded);
+			linesAfterWrap[i] = ll->lines;
+		}
+	}
+  g_slice_free (DecorationData, decoration);
+}
+}
+#endif
+
 bool Editor::WrapBlock(Surface *surface, Sci::Line lineToWrap, Sci::Line lineToWrapEnd) {
 
 	const size_t linesBeingWrapped = static_cast<size_t>(lineToWrapEnd - lineToWrap);
@@ -1552,9 +1619,6 @@ bool Editor::WrapBlock(Surface *surface, Sci::Line lineToWrap, Sci::Line lineToW
 
 	// Wrap all the short lines in multiple threads
 
-	// If only 1 thread needed then use the main thread, else spin up multiple
-	const std::launch policy = multiThreaded ? std::launch::async : std::launch::deferred;
-
 	std::atomic<size_t> nextIndex = 0;
 
 	// Lines that are less likely to be re-examined should not be read from or written to the cache.
@@ -1564,9 +1628,31 @@ bool Editor::WrapBlock(Surface *surface, Sci::Line lineToWrap, Sci::Line lineToW
 		LinesOnScreen() + 1,
 		view.llc.GetLevel(),
 	};
-
 	// Protect the line layout cache from being accessed from multiple threads simultaneously
 	std::mutex mutexRetrieve;
+#ifdef GTK
+	GThreadPool* threadpool = g_thread_pool_new (   baked_cb,   NULL,  threads,   TRUE,   NULL );
+	for (size_t th = 0; th < threads; th++) {
+		DecorationData	*decoration = g_slice_new (DecorationData);
+		decoration->significantLines=&significantLines;
+		decoration->surface=surface; 
+		decoration->nextIndex=&nextIndex;
+		decoration->linesAfterWrap= &linesAfterWrap;
+		decoration->mutexRetrieve = &mutexRetrieve;
+		decoration->view=&view;
+		decoration->editModel = this;
+		decoration->linesBeingWrapped = linesBeingWrapped;
+		decoration->lineToWrap = &lineToWrap;
+		decoration->pdoc = pdoc;
+		decoration->vs = &vs;
+		decoration->wrapWidth=wrapWidth;
+		decoration->multiThreaded=multiThreaded;
+		g_thread_pool_push(threadpool,decoration,NULL);
+	}
+	g_thread_pool_free(threadpool, FALSE, TRUE);
+#else
+	// If only 1 thread needed then use the main thread, else spin up multiple
+	const std::launch policy = multiThreaded ? std::launch::async : std::launch::deferred;
 
 	std::vector<std::future<void>> futures;
 	for (size_t th = 0; th < threads; th++) {
@@ -1601,6 +1687,7 @@ bool Editor::WrapBlock(Surface *surface, Sci::Line lineToWrap, Sci::Line lineToW
 	for (const std::future<void> &f : futures) {
 		f.wait();
 	}
+#endif 
 	// End of multiple threads
 
 	// Multiply duration by number of threads to produce (near) equivalence to duration if single threaded

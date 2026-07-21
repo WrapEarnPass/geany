@@ -66,6 +66,10 @@
 #include "EditView.h"
 #include "ElapsedPeriod.h"
 
+#ifdef GTK
+#include <glib.h>
+#endif
+
 using namespace Scintilla;
 using namespace Scintilla::Internal;
 
@@ -390,6 +394,29 @@ void LayoutSegments(IPositionCache *pCache,
 
 }
 
+#ifdef GTK
+namespace {
+	typedef struct {
+		IPositionCache *pCache;
+		Surface *surface;
+		const ViewStyle *vstyle;
+		LineLayout **ll;
+		std::vector<TextSegment> *segments;
+		std::atomic<uint32_t> *nextIndex;
+		bool textUnicode;
+		bool multiThreaded;
+	} DecorationData;
+
+	void baked_cb(void *data, void *user_data)
+	{
+		DecorationData *decoration = (DecorationData*)data;
+		LayoutSegments(decoration->pCache, decoration->surface, *decoration->vstyle, *decoration->ll, *decoration->segments, *decoration->nextIndex, decoration->textUnicode, decoration->multiThreaded);
+		g_slice_free (DecorationData, decoration);
+	}
+}
+#endif
+
+
 /**
 * Fill in the LineLayout data for the given line.
 * Copy the given @a line and its styles from the document into local arrays.
@@ -502,6 +529,22 @@ void EditView::LayoutLine(const EditModel &model, Surface *surface, const ViewSt
 			const bool multiThreadedContext = multiThreaded || callerMultiThreaded;
 			IPositionCache *pCache = posCache.get();
 
+#if GTK
+			GThreadPool* threadpool = g_thread_pool_new (   baked_cb,   NULL,  threads,   TRUE,   NULL );
+			for (size_t th = 0; th < threads; th++) {
+				DecorationData	*decoration = g_slice_new (DecorationData);
+				decoration->pCache=pCache;
+				decoration->surface=surface;
+				decoration->vstyle=&vstyle;
+				decoration->ll=&ll;
+				decoration->segments=&segments;
+				decoration->nextIndex=&nextIndex;
+				decoration->textUnicode=textUnicode;
+				decoration->multiThreaded=multiThreadedContext;
+				g_thread_pool_push(threadpool,decoration,NULL);
+			}
+			g_thread_pool_free(threadpool, FALSE, TRUE);
+#else
 			// If only 1 thread needed then use the main thread, else spin up multiple
 			const std::launch policy = (multiThreaded) ? std::launch::async : std::launch::deferred;
 
@@ -517,6 +560,7 @@ void EditView::LayoutLine(const EditModel &model, Surface *surface, const ViewSt
 			for (const std::future<void> &f : futures) {
 				f.wait();
 			}
+#endif
 		}
 
 		// Accumulate absolute positions from relative positions within segments and expand tabs
