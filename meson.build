@@ -838,7 +838,7 @@ if host_machine.system() == 'darwin'
 endif
 
 vte_src = ['src/vte.c', 'src/vte.h']
-if host_machine.system() == 'windows' or vte==false
+if host_machine.system() == 'windows' or get_option('vte') == false
 	# No VTE support on Windows
 	vte_src = []
 endif
