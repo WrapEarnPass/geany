@@ -1,5 +1,5 @@
 project('geany', 'c', 'cpp',
-        meson_version: '>= 0.56',
+        meson_version: '>= 0.60',
         version: '2.2.0',
         default_options : ['c_std=c11', 'cpp_std=c++17'])
 
@@ -140,6 +140,12 @@ if (get_option('socket'))
 	cdata.set('HAVE_SOCKET', 1)
 endif
 
+sci_deps =[]
+if (get_option('layout-thread'))
+	cdata.set('HAVE_SCI_THREAD', 1)
+	sci_deps=cxx.find_library('pthread')
+endif
+
 if (host_machine.system() == 'windows')
 	cdata.set('GEANY_DATA_DIR', join_paths(prefix, 'data'))
 else
@@ -219,6 +225,14 @@ if (gnu_source)
 	basic_cflags += '-D_GNU_SOURCE'
 endif
 
+if (host_machine.system() == 'windows')
+	basic_cflags = basic_cflags + [
+		'-D_WIN32_WINNT=0x0A00',
+		'-DWINVER=0x0A00',
+		'-municode'
+	]
+endif
+
 # CFLAGS common between Geany and bundled plugins
 def_cflags = basic_cflags + [
 	'-DGTK',
@@ -228,30 +242,13 @@ def_cflags = basic_cflags + [
 	'-DGLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_56',
 	'-DGEANY_PREFIX="@0@"'.format(get_option('prefix')),
 	'-DGEANY_DOCDIR="@0@"'.format(join_paths(prefix, get_option('datadir'), 'doc')),
-	'-march=x86-64-v2',
-	'-mtune=generic'
 ]
-
 
 foreach d : [ 'includedir', 'libdir', 'libexecdir', 'datadir', 'localedir' ]
 	def_cflags += '-DGEANY_@0@="@1@"'.format(d.underscorify().to_upper(), join_paths(prefix, get_option(d)))
 endforeach
 
-if (host_machine.system() == 'windows')
-	def_cflags = def_cflags + [
-		'-mwindows',
-		'-mwin32',
-		'-municode',
-		'-fwritable-relocated-rdata',
-		'-mpe-aligned-commons',
-		'-msahf',
-		'-Wp,-D_FORTIFY_SOURCE=2',
-		'-fstack-protector-strong',
-		'-mthreads',
-		'-D_WIN32_WINNT=0x0A00',
-		'-DWINVER=0x0A00',
-	]
-endif
+
 
 # CFLAGS for everything else, i.e. most of Geany
 geany_cflags = def_cflags
@@ -265,7 +262,7 @@ elif have_gcc4_visibility
 endif
 geany_cflags += '-DGEANY_API_SYMBOL=GEANY_EXPORT_SYMBOL'
 sci_cflags = geany_cflags
-sci_cflags += [ '-std=c++17', '-Wno-non-virtual-dtor', '-DNDEBUG', '-DSCI_LEXER', '-DNO_CXX11_REGEX' ]
+sci_cflags += [ '-std=c++17', '-Wno-non-virtual-dtor', '-DNDEBUG', '-DSCI_LEXER', '-DNO_CXX11_REGEX', '-static']
 
 iregex = include_directories('ctags/gnu_regex')
 ifnmatch = include_directories('ctags/fnmatch')
@@ -481,7 +478,7 @@ scintilla = static_library('scintilla',
 	'scintilla/src/XPM.cxx',
 	'scintilla/src/XPM.h',
 	cpp_args: sci_cflags,
-	dependencies: deps + [ dep_lexilla ],
+	dependencies: deps + sci_deps + [ dep_lexilla ],
 	include_directories: [
 		iscintilla,
 		include_directories('scintilla/include', 'scintilla/src')
@@ -815,7 +812,7 @@ if (host_machine.system() == 'windows')
 	windows = import('windows')
 	win_resc = windows.compile_resources('geany_private.rc')
 	win_src += [ 'src/win32.c', 'src/win32.h' ]
-	foreach lib : ['ole32', 'ws2_32', 'comdlg32']
+	foreach lib : ['ws2_32']
 		win_deps += cc.find_library(lib)
 	endforeach
 	# install Windows run helper
